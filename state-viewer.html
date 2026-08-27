@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Turret state QA viewer (temp)</title>
+    <style>
+      body { margin: 0; background: #99a3ad; font-family: monospace; }
+      #labels { position: fixed; top: 4px; left: 4px; color: #123; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div id="labels"></div>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.170.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.170.0/examples/jsm/"
+        }
+      }
+    </script>
+    <script type="module">
+      import * as THREE from 'three';
+      import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+      const params = new URLSearchParams(location.search);
+      const files = (params.get('files') || '').split(',').filter(Boolean);
+      document.getElementById('labels').textContent = files.join('   |   ');
+
+      const W = innerWidth, H = innerHeight;
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(W, H);
+      document.body.appendChild(renderer.domElement);
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x99a3ad);
+      // Orthographic: every model in the row is seen from the identical
+      // angle, so yaw differences between models are real, not parallax.
+      const camera = new THREE.OrthographicCamera(0, 1, 1, 0, 0.1, 200);
+
+      scene.add(new THREE.AmbientLight(0xffffff, 1.1));
+      const key = new THREE.DirectionalLight(0xffffff, 1.6);
+      key.position.set(3, 8, 5);
+      scene.add(key);
+      const grid = new THREE.GridHelper(100, 100, 0x667788, 0xaab4bd);
+      scene.add(grid);
+
+      // Same normalization as Turret.adoptStateModels: fit the base footprint
+      // (bottom 40% of vertices) to a shared width, bottom at y=0.
+      const BASE_W = 4.2;
+      function footprint(obj) {
+        const full = new THREE.Box3().setFromObject(obj);
+        const cut = full.min.y + (full.max.y - full.min.y) * 0.4;
+        const box = new THREE.Box3();
+        const v = new THREE.Vector3();
+        obj.updateWorldMatrix(true, true);
+        obj.traverse((o) => {
+          if (!o.isMesh) return;
+          const pos = o.geometry.getAttribute('position');
+          for (let i = 0; i < pos.count; i++) {
+            v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
+            if (v.y <= cut) box.expandByPoint(v);
+          }
+        });
+        return { box, minY: full.min.y };
+      }
+
+      // Each entry is "path" or "path:yawDegrees" — yaw is applied BEFORE
+      // the footprint fit, matching how the game will bake corrections.
+      const loader = new GLTFLoader();
+      const SPACING = 6;
+      let done = 0;
+      files.forEach((entry, i) => {
+        const [f, yawDeg] = entry.split(':');
+        loader.load(f, (gltf) => {
+          const obj = gltf.scene;
+          obj.rotation.y = (parseFloat(yawDeg || '0') * Math.PI) / 180;
+          const foot = footprint(obj);
+          const s = BASE_W / Math.max(0.001, foot.box.max.x - foot.box.min.x);
+          obj.scale.setScalar(s);
+          const cx = (foot.box.max.x + foot.box.min.x) / 2;
+          const cz = (foot.box.max.z + foot.box.min.z) / 2;
+          obj.position.set(i * SPACING - cx * s, -foot.minY * s, -cz * s);
+          scene.add(obj);
+          if (++done === files.length) window.__VIEWER_READY__ = true;
+          render();
+        });
+      });
+
+      const mid = ((files.length - 1) * SPACING) / 2;
+      // ?zoom=2 tightens the frustum for close inspection; ?lookY= aims it.
+      const zoom = parseFloat(params.get('zoom') || '1');
+      const halfW = ((files.length * SPACING) / 2 + 1) / zoom;
+      const halfH = Math.max(halfW * (H / W), 4.6 / zoom);
+      camera.left = -halfW; camera.right = halfW;
+      camera.top = halfH; camera.bottom = -halfH;
+      camera.updateProjectionMatrix();
+      // In-game-like view: behind the turret, slightly above.
+      // ?cam=top looks straight down for unambiguous tube/missile counts.
+      if (params.get('cam') === 'top') {
+        camera.position.set(mid, 30, 0.01);
+        camera.lookAt(mid, 0, 0);
+      } else {
+        const lookY = parseFloat(params.get('lookY') || '2.4');
+        camera.position.set(mid, 9, 26);
+        camera.lookAt(mid, lookY, 0);
+      }
+      function render() {
+        renderer.render(scene, camera);
+      }
+      render();
+    </script>
+  </body>
+</html>
